@@ -2,26 +2,35 @@
    VidQR — Script
    ============================================ */
 
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
+import { initializeApp } from 'firebase/app';
+import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import QRCode from 'https://cdn.jsdelivr.net/npm/qrcode/+esm'
 
 (function () {
     'use strict';
 
-    // ---------- Supabase Config ----------
-    // IMPORTANT: Replace these with your actual Supabase project credentials
-    const SUPABASE_URL = 'YOUR_SUPABASE_URL';
-    const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+    // ---------- Firebase Config ----------
+    // IMPORTANT: Replace these with your actual Firebase project settings
+    const firebaseConfig = {
+        apiKey: "YOUR_API_KEY",
+        authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+        projectId: "YOUR_PROJECT_ID",
+        storageBucket: "YOUR_PROJECT_ID.firebasestorage.app",
+        messagingSenderId: "YOUR_SENDER_ID",
+        appId: "YOUR_APP_ID"
+    };
     
-    let supabase = null;
-    let isSupabaseConfigured = false;
+    let app = null;
+    let storage = null;
+    let isFirebaseConfigured = false;
 
-    if (SUPABASE_URL !== 'YOUR_SUPABASE_URL' && SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY') {
+    if (firebaseConfig.apiKey !== "YOUR_API_KEY") {
         try {
-            supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-            isSupabaseConfigured = true;
+            app = initializeApp(firebaseConfig);
+            storage = getStorage(app);
+            isFirebaseConfigured = true;
         } catch (e) {
-            console.error('Failed to initialize Supabase:', e);
+            console.error('Failed to initialize Firebase:', e);
         }
     }
 
@@ -240,8 +249,8 @@ import QRCode from 'https://cdn.jsdelivr.net/npm/qrcode/+esm'
         }
         hideError();
 
-        if (!isSupabaseConfigured) {
-            showError('Please configure your Supabase URL and Key in script.js first.');
+        if (!isFirebaseConfigured) {
+            showError('Please configure your Firebase config in script.js first.');
             return;
         }
 
@@ -254,54 +263,48 @@ import QRCode from 'https://cdn.jsdelivr.net/npm/qrcode/+esm'
 
         try {
             const fileName = `video-${Date.now()}-${selectedFile.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
-            const filePath = `videos/${fileName}`;
+            const storageRef = ref(storage, `videos/${fileName}`);
 
-            // Upload to Supabase Storage
-            const { data, error } = await supabase.storage
-                .from('vidqr-videos') // Assumes a bucket named 'vidqr-videos' exists
-                .upload(filePath, selectedFile, {
-                    cacheControl: '3600',
-                    upsert: false
-                });
+            const uploadTask = uploadBytesResumable(storageRef, selectedFile, {
+                cacheControl: 'public,max-age=3600'
+            });
 
-            if (error) throw error;
-
-            // Get Public URL
-            progressText.textContent = 'Generating permanent link...';
-            const { data: { publicUrl } } = supabase.storage
-                .from('vidqr-videos')
-                .getPublicUrl(filePath);
-
-            generateQR(publicUrl);
-            
-            // Hide progress after success
-            setTimeout(() => {
-                uploadProgress.classList.add('hidden');
-            }, 1000);
+            uploadTask.on('state_changed', 
+                (snapshot) => {
+                    // Update progress bar natively!
+                    const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                    progressBarFill.style.width = `${progress}%`;
+                    progressText.textContent = `Uploading to cloud (${Math.round(progress)}%)`;
+                }, 
+                (error) => {
+                    console.error('Upload error:', error);
+                    showError('Failed to upload video to cloud. ' + (error.message || 'Check your connection.'));
+                    btnGenerateUpload.classList.remove('loading');
+                    btnGenerateUpload.disabled = false;
+                    uploadProgress.classList.add('hidden');
+                }, 
+                async () => {
+                    // Upload complete, get download URL
+                    progressText.textContent = 'Generating permanent link...';
+                    const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                    
+                    generateQR(downloadURL);
+                    
+                    // Hide progress after success
+                    setTimeout(() => {
+                        uploadProgress.classList.add('hidden');
+                    }, 1000);
+                }
+            );
 
         } catch (error) {
-            console.error('Upload error:', error);
-            showError('Failed to upload video to cloud. ' + (error.message || 'Check your connection.'));
+            console.error('Initialization error:', error);
+            showError('Failed to start upload. ' + (error.message || 'Check your connection.'));
             btnGenerateUpload.classList.remove('loading');
             btnGenerateUpload.disabled = false;
+            uploadProgress.classList.add('hidden');
         }
     });
-
-    // Dummy progress simulator (Supabase JS SDK upload doesn't have native progress callback in basic upload)
-    // To implement real progress, we'd use XHR or a specialized library, but for simplicity:
-    function simulateProgress() {
-        let p = 0;
-        const interval = setInterval(() => {
-            if (p >= 90) {
-                clearInterval(interval);
-                return;
-            }
-            p += Math.random() * 5;
-            progressBarFill.style.width = `${Math.min(p, 90)}%`;
-            progressText.textContent = `Uploading to cloud (${Math.round(p)}%)`;
-        }, 300);
-        return interval;
-    }
 
     // ---------- QR Code Generation ----------
     function generateQR(url) {
